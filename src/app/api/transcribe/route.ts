@@ -11,10 +11,13 @@ import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt'
 // Route Segment Config - 支持大文件上传
 export const maxDuration = 300; // 5 分钟超时
 
-const client = new OpenAI({
-  apiKey: process.env.API_KEY,
-  baseURL: process.env.BASE_URL
-});
+// Lazily create client per-request so build phase never needs API_KEY
+function getClient() {
+  return new OpenAI({
+    apiKey: process.env.API_KEY,
+    baseURL: process.env.BASE_URL,
+  });
+}
 
 async function formatWithAI(
   text: string, 
@@ -28,7 +31,7 @@ async function formatWithAI(
 
 Make minimal changes to improve readability while keeping the original meaning and structure intact.`;
 
-    const response = await client.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages: [
         {
@@ -222,7 +225,7 @@ async function transcribeInChunks(
 
         if (needSrt) {
           // Use verbose_json for SRT output to get timestamps
-          const response = await client.audio.transcriptions.create({
+          const response = await getClient().audio.transcriptions.create({
             model: 'whisper-large-v3-turbo',
             file: chunkFile,
             response_format: "verbose_json",

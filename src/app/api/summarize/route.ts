@@ -3,10 +3,12 @@ import { OpenAI } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { logger } from '@/lib/utils';
 
-const client = new OpenAI({
-  apiKey: process.env.API_KEY,
-  baseURL: process.env.BASE_URL
-});
+function getClient() {
+  return new OpenAI({
+    apiKey: process.env.API_KEY,
+    baseURL: process.env.BASE_URL,
+  });
+}
 
 export async function POST(request: Request) {
   try {
@@ -53,7 +55,7 @@ Format with:
     const allMessages = [systemMessage, ...messages];
     logger.info('[Summarize] Sending request to OpenAI');
 
-    const response = await client.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: allMessages,
       temperature: 0.7,
