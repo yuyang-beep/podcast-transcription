@@ -34,6 +34,7 @@ export default function AudioTranscription() {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string>('');
   const [enableSummary, setEnableSummary] = useState(false);
+  const [summaryOnlyMode, setSummaryOnlyMode] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState<'txt' | 'srt'>('txt');
 
   const languages = [
@@ -54,6 +55,7 @@ export default function AudioTranscription() {
     setSrtContent('');
     setError(null);
     setProgress('');
+    setSummaryOnlyMode(false);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -124,27 +126,31 @@ export default function AudioTranscription() {
     }
   };
 
-  const handleTranscribe = async () => {
-    // Must have either a CDN/direct URL or a locally-uploaded file
+  const handleTranscribe = async (opts?: { summaryOnly?: boolean }) => {
+    const summaryOnly = opts?.summaryOnly ?? false;
+    const shouldSummarize = summaryOnly || enableSummary;
+
     if (!audioCdnUrl && !audioFile) {
       setError('No audio loaded. Please load an audio file first.');
       return;
     }
 
+    setSummaryOnlyMode(summaryOnly);
     setIsTranscribing(true);
     setError(null);
     setSrtContent('');
-    const formData = new FormData();
+    setTranscription('');
+    setSummary('');
+    setProgress('');
 
+    const formData = new FormData();
     if (audioCdnUrl) {
-      // Preferred path: pass URL to server so it downloads directly (no large upload)
       formData.append('audioUrl', audioCdnUrl);
     } else if (audioFile) {
-      // Fallback: upload the local file
       formData.append('file', audioFile);
     }
     formData.append('language', selectedLanguage);
-    formData.append('outputFormat', 'srt'); // Always request SRT for download option
+    formData.append('outputFormat', summaryOnly ? 'text' : 'srt');
 
     try {
       const response = await fetch('/api/transcribe', {
@@ -152,7 +158,6 @@ export default function AudioTranscription() {
         body: formData,
       });
 
-      // If server returned a non-streaming error, surface it immediately
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error((errData as { error?: string }).error || `Server error ${response.status}`);
@@ -174,44 +179,40 @@ export default function AudioTranscription() {
           const data = JSON.parse(message);
 
           switch (data.type) {
-            case 'progress':
-              setProgress(data.message);
+            case 'progress': {
+              if (summaryOnly) {
+                // Show friendlier progress in summary-only mode
+                const m = (data.message as string).match(/chunk (\d+)\/(\d+)/i);
+                setProgress(m ? `Analyzing podcast... (${m[1]} / ${m[2]})` : data.message);
+              } else {
+                setProgress(data.message);
+              }
               break;
+            }
             case 'partial':
               partialTranscripts[data.progress.current - 1] = data.transcript;
               setTranscription(partialTranscripts.join(' '));
-              if (data.srt) {
+              if (!summaryOnly && data.srt) {
                 partialSrts[data.progress.current - 1] = data.srt;
                 setSrtContent(partialSrts.join('\n'));
               }
               break;
             case 'complete':
-              if (data.srt) {
+              if (!summaryOnly && data.srt) {
                 setSrtContent(data.srt);
               }
-              if (enableSummary) {
+              if (shouldSummarize) {
                 setProgress('Generating summary...');
                 try {
                   const summaryResponse = await fetch('/api/summarize', {
                     method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                      messages: [
-                        {
-                          role: "user",
-                          content: data.transcript
-                        }
-                      ],
-                      language: selectedLanguage
+                      messages: [{ role: 'user', content: data.transcript }],
+                      language: selectedLanguage,
                     }),
                   });
-
-                  if (!summaryResponse.ok) {
-                    throw new Error('Failed to generate summary');
-                  }
-
+                  if (!summaryResponse.ok) throw new Error('Failed to generate summary');
                   const summaryData = await summaryResponse.json();
                   setSummary(summaryData.summary);
                 } catch (error) {
@@ -228,7 +229,7 @@ export default function AudioTranscription() {
         }
       }
     } catch (error) {
-      setError('Failed to transcribe audio');
+      setError(error instanceof Error ? error.message : 'Failed to transcribe audio');
       logger.error('Transcription error:', error);
     } finally {
       setIsTranscribing(false);
@@ -380,32 +381,45 @@ export default function AudioTranscription() {
                 ))}
               </select>
               <div className="flex items-center gap-2">
-                <Switch
-                  id="enable-summary"
-                  checked={enableSummary}
-                  onCheckedChange={setEnableSummary}
-                />
-                <label htmlFor="enable-summary" className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                  AI Summary
-                </label>
+                {/* Generate Summary – transcribes silently, shows only summary */}
+                <Button
+                  onClick={() => handleTranscribe({ summaryOnly: true })}
+                  disabled={isTranscribing}
+                  className="flex items-center gap-2"
+                >
+                  {isTranscribing && summaryOnlyMode ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <FileStack className="h-4 w-4" />
+                      Generate Summary
+                    </>
+                  )}
+                </Button>
+
+                {/* Transcribe – shows full verbatim transcript (+ optional summary) */}
+                <Button
+                  variant="outline"
+                  onClick={() => handleTranscribe()}
+                  disabled={isTranscribing}
+                  className="flex items-center gap-2"
+                >
+                  {isTranscribing && !summaryOnlyMode ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Transcribing...
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4" />
+                      Transcribe
+                    </>
+                  )}
+                </Button>
               </div>
-              <Button
-                onClick={handleTranscribe}
-                disabled={isTranscribing}
-                className="flex items-center gap-2"
-              >
-                {isTranscribing ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Transcribing...
-                  </>
-                ) : (
-                  <>
-                    <FileText className="h-4 w-4" />
-                    Transcribe
-                  </>
-                )}
-              </Button>
             </div>
             {progress && (
               <div className="text-sm text-gray-500 mt-2">
@@ -417,7 +431,8 @@ export default function AudioTranscription() {
 
         {(transcription || summary) && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {transcription && (
+            {/* Hide transcript card in summary-only mode */}
+            {transcription && !summaryOnlyMode && (
               <Card className="h-full bg-white/50 backdrop-blur-sm dark:bg-gray-800/50 hover:shadow-lg transition-shadow duration-200">
                 <CardHeader>
                   <CardTitle className="flex justify-between items-center">
