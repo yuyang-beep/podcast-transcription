@@ -4,8 +4,8 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { logger } from '@/lib/utils';
 
 const client = new OpenAI({
-  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-  baseURL: process.env.NEXT_PUBLIC_BASE_URL
+  apiKey: process.env.API_KEY,
+  baseURL: process.env.BASE_URL
 });
 
 export async function POST(request: Request) {

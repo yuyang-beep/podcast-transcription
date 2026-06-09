@@ -1,6 +1,19 @@
 import { NextResponse } from 'next/server';
 import { logger } from '@/lib/utils';
 
+const PRIVATE_IP = /^(https?:\/\/)(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|::1|fc00:|fe80:)/i;
+
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (PRIVATE_IP.test(url)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -29,6 +42,10 @@ export async function POST(request: Request) {
       logger.info('[Audio] Got audio URL:', audioUrl);
     }
     
+    if (!isSafeUrl(audioUrl)) {
+      return NextResponse.json({ error: 'Invalid or disallowed URL' }, { status: 400 });
+    }
+
     logger.info('[Audio] Downloading audio from URL:', audioUrl);
     const response = await fetch(audioUrl);
     if (!response.ok) {

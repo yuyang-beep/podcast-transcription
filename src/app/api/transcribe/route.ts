@@ -12,8 +12,8 @@ import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt'
 export const maxDuration = 300; // 5 分钟超时
 
 const client = new OpenAI({
-  apiKey: process.env.NEXT_PUBLIC_OPENAI_API_KEY,
-  baseURL: process.env.NEXT_PUBLIC_BASE_URL
+  apiKey: process.env.API_KEY,
+  baseURL: process.env.BASE_URL
 });
 
 async function formatWithAI(
@@ -93,9 +93,11 @@ export async function POST(
     }
 
 
-    // Get file extension from filename
+    // Get file extension from filename — only allow safe audio extensions
+    const ALLOWED_EXTENSIONS = new Set(['.mp3', '.mp4', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.webm', '.wma']);
     const fileName = file instanceof File ? file.name : 'audio.mp3';
-    const fileExtension = extname(fileName) || '.mp3';
+    const rawExtension = extname(fileName).toLowerCase() || '.mp3';
+    const fileExtension = ALLOWED_EXTENSIONS.has(rawExtension) ? rawExtension : '.mp3';
 
     (async () => {
       try {
@@ -182,7 +184,7 @@ async function transcribeInChunks(
     writeFileSync(inputPath, Buffer.from(buffer));
 
     // Get audio duration using ffprobe
-    const durationCmd = `ffprobe -i ${inputPath} -show_entries format=duration -v quiet -of csv="p=0"`;
+    const durationCmd = `ffprobe -i "${inputPath}" -show_entries format=duration -v quiet -of csv="p=0"`;
     const totalDuration = parseFloat(execSync(durationCmd).toString());
     const chunks = Math.ceil(totalDuration / chunkDuration);
 
@@ -196,7 +198,7 @@ async function transcribeInChunks(
       const start = i * chunkDuration;
       const outputPath = join(tempDir, `chunk-${i + 1}${ext}`);
       // Split audio using ffmpeg
-      const splitCmd = `ffmpeg -i ${inputPath} -ss ${start} -t ${chunkDuration} -c copy ${outputPath}`;
+      const splitCmd = `ffmpeg -i "${inputPath}" -ss ${start} -t ${chunkDuration} -c copy "${outputPath}"`;
       execSync(splitCmd);
 
       // Add delay between chunks
@@ -312,7 +314,7 @@ async function transcribeInChunks(
     // Cleanup temp directory if it exists
     try {
       if (existsSync(tempDir)) {
-        execSync(`rm -rf ${tempDir}`);
+        execSync(`rm -rf "${tempDir}"`);
         logger.info(`[Transcription] Cleaned up temp directory: ${tempDir}`);
       }
     } catch (cleanupError) {
