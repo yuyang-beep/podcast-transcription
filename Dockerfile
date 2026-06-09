@@ -34,7 +34,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true
 ENV PUPPETEER_EXECUTABLE_PATH /usr/bin/google-chrome
 
 # Build Next.js
-RUN NODE_OPTIONS="--max-old-space-size=512" npm run build
+RUN npm run build
 
 # Production image, copy all the files and run next
 FROM base AS runner
