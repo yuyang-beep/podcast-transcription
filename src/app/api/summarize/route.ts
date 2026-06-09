@@ -54,7 +54,7 @@ Format with:
     logger.info('[Summarize] Sending request to OpenAI');
 
     const response = await client.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'llama-3.3-70b-versatile',
       messages: allMessages,
       temperature: 0.7,
       max_tokens: 1000,

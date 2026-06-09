@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: podcast-transcription
+    runtime: docker
+    plan: free
+    envVars:
+      - key: API_KEY
+        sync: false
+      - key: BASE_URL
+        sync: false

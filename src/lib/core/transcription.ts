@@ -79,7 +79,7 @@ Make minimal changes to improve readability while keeping the original meaning a
       : `Please format this transcript:\n\n${text}`;
 
     const response = await client.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "llama-3.3-70b-versatile",
       messages: [
         {
           role: "system",
@@ -174,7 +174,7 @@ async function transcribeFromPath(
     if (needSrt) {
       // Use verbose_json for SRT output to get timestamps
       const response = await client.audio.transcriptions.create({
-        model: 'whisper-1',
+        model: 'whisper-large-v3-turbo',
         file: chunkFile,
         response_format: "verbose_json",
         language: langParam,
@@ -208,7 +208,7 @@ async function transcribeFromPath(
     } else {
       // Text-only flow
       const response = await client.audio.transcriptions.create({
-        model: 'whisper-1',
+        model: 'whisper-large-v3-turbo',
         file: chunkFile,
         response_format: "text",
         language: langParam,

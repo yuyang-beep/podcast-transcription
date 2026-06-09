@@ -29,7 +29,7 @@ async function formatWithAI(
 Make minimal changes to improve readability while keeping the original meaning and structure intact.`;
 
     const response = await client.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "llama-3.3-70b-versatile",
       messages: [
         {
           role: "system",
@@ -221,7 +221,7 @@ async function transcribeInChunks(
         if (needSrt) {
           // Use verbose_json for SRT output to get timestamps
           const response = await client.audio.transcriptions.create({
-            model: 'whisper-1',
+            model: 'whisper-large-v3-turbo',
             file: chunkFile,
             response_format: "verbose_json",
             language: language !== 'auto' ? language : undefined,
@@ -259,14 +259,14 @@ async function transcribeInChunks(
           let response;
           if (language !== 'auto') {
             response = await client.audio.transcriptions.create({
-              model: 'whisper-1',
+              model: 'whisper-large-v3-turbo',
               file: chunkFile,
               response_format: "text",
               language: language
             });
           } else {
             response = await client.audio.transcriptions.create({
-              model: 'whisper-1',
+              model: 'whisper-large-v3-turbo',
               file: chunkFile,
               response_format: "text",
               prompt: "如果是中文，请使用简体中文"
