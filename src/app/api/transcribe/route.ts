@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import OpenAI from 'openai';
 import { logger } from '@/lib/utils';
 import { join, extname } from 'path';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs';
 import { execSync } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { WhisperVerboseResponse, SrtEntry } from '@/lib/core/types';
@@ -216,7 +217,9 @@ async function transcribeInChunks(
   chunkDuration: number = 300 // 5 minutes in seconds
 ): Promise<TranscribeResult> {
   const sessionId = uuidv4();
-  const baseDir = join(process.cwd(), 'temp');
+  // Use the OS temp dir so the non-root nextjs user can always write here
+  // (the app working directory /app is owned by root in Docker)
+  const baseDir = join(tmpdir(), 'podcast-transcription');
   const tempDir = join(baseDir, sessionId);
   const needSrt = outputFormat === 'srt';
 
@@ -370,10 +373,10 @@ async function transcribeInChunks(
     logger.error('[Transcription] Error:', error);
     throw error;
   } finally {
-    // Cleanup temp directory if it exists
+    // Cleanup temp directory using Node.js built-in (cross-platform, no shell)
     try {
       if (existsSync(tempDir)) {
-        execSync(`rm -rf "${tempDir}"`);
+        rmSync(tempDir, { recursive: true, force: true });
         logger.info(`[Transcription] Cleaned up temp directory: ${tempDir}`);
       }
     } catch (cleanupError) {
