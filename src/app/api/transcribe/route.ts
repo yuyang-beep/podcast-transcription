@@ -263,14 +263,14 @@ async function transcribeInChunks(
           // Original text-only flow
           let response;
           if (language !== 'auto') {
-            response = await client.audio.transcriptions.create({
+            response = await getClient().audio.transcriptions.create({
               model: 'whisper-large-v3-turbo',
               file: chunkFile,
               response_format: "text",
               language: language
             });
           } else {
-            response = await client.audio.transcriptions.create({
+            response = await getClient().audio.transcriptions.create({
               model: 'whisper-large-v3-turbo',
               file: chunkFile,
               response_format: "text",
