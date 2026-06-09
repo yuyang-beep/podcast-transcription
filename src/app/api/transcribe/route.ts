@@ -8,6 +8,17 @@ import { v4 as uuidv4 } from 'uuid';
 import { WhisperVerboseResponse, SrtEntry } from '@/lib/core/types';
 import { convertSegmentsToSrtEntries, entriesToSrtString } from '@/lib/core/srt';
 
+// SSRF protection – same list as /api/audio
+const PRIVATE_IP = /^(https?:\/\/)(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|169\.254\.|::1|fc00:|fe80:)/i;
+function isSafeAudioUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (PRIVATE_IP.test(url)) return false;
+    return true;
+  } catch { return false; }
+}
+
 // Route Segment Config - 支持大文件上传
 export const maxDuration = 300; // 5 分钟超时
 
@@ -63,48 +74,86 @@ export async function POST(
     logger.info('[Transcription] Starting transcription request');
     const formData = await request.formData();
     const file = formData.get('file');
+    const audioUrlInput = formData.get('audioUrl') as string | null;
     const language = formData.get('language') as string || 'auto';
     const outputFormat = formData.get('outputFormat') as string || 'text';
-    
-    if (!file) {
+
+    // Must have either a file upload or an audio URL
+    if (!file && !audioUrlInput) {
       return NextResponse.json(
-        { error: 'No audio file provided' },
+        { error: 'No audio file or URL provided' },
         { status: 400 }
       );
     }
 
-    logger.info('[Transcription] Received file details:', {
-      type: file instanceof Blob ? file.type : typeof file,
-      size: file instanceof Blob ? file.size : 'unknown'
-    });
-    // Better file validation
-    if (!file) {
-      logger.error('[Transcription] No file provided');
+    // SSRF protection for URL-based input
+    if (audioUrlInput && !isSafeAudioUrl(audioUrlInput)) {
       return NextResponse.json(
-        { error: 'No file provided' },
-        { status: 400 }
-      );
-    }
-    
-    // Ensure file is a Blob or File
-    if (!file || typeof file === 'string' || !(file instanceof Blob)) {
-      logger.error('[Transcription] Invalid file format - not a Blob or File');
-      return NextResponse.json(
-        { error: 'Invalid file format' },
+        { error: 'Invalid or disallowed audio URL' },
         { status: 400 }
       );
     }
 
-
-    // Get file extension from filename — only allow safe audio extensions
-    const ALLOWED_EXTENSIONS = new Set(['.mp3', '.mp4', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.webm', '.wma']);
-    const fileName = file instanceof File ? file.name : 'audio.mp3';
-    const rawExtension = extname(fileName).toLowerCase() || '.mp3';
-    const fileExtension = ALLOWED_EXTENSIONS.has(rawExtension) ? rawExtension : '.mp3';
+    // Validate uploaded file format (only when a file is provided)
+    if (file) {
+      if (typeof file === 'string' || !(file instanceof Blob)) {
+        logger.error('[Transcription] Invalid file format - not a Blob or File');
+        return NextResponse.json(
+          { error: 'Invalid file format' },
+          { status: 400 }
+        );
+      }
+      logger.info('[Transcription] Received file details:', {
+        type: file instanceof Blob ? file.type : typeof file,
+        size: file instanceof Blob ? file.size : 'unknown'
+      });
+    }
 
     (async () => {
       try {
-        const result = await transcribeInChunks(file, fileExtension, writer, encoder, language, outputFormat);
+        // Send an initial progress event immediately so Render doesn't time out
+        // waiting for the first byte of the streaming response.
+        await writer.write(
+          encoder.encode(JSON.stringify({
+            type: 'progress',
+            message: audioUrlInput ? 'Downloading audio...' : 'Starting transcription...'
+          }) + '\n')
+        );
+
+        let fileToTranscribe: Blob;
+        let fileExtension: string;
+
+        if (audioUrlInput) {
+          // URL-based path: download audio server-side (avoids large browser upload)
+          logger.info('[Transcription] Downloading audio from URL:', audioUrlInput);
+          await writer.write(
+            encoder.encode(JSON.stringify({
+              type: 'progress',
+              message: 'Downloading audio from URL...'
+            }) + '\n')
+          );
+          const audioResp = await fetch(audioUrlInput);
+          if (!audioResp.ok) {
+            throw new Error(`Failed to download audio: ${audioResp.statusText}`);
+          }
+          fileToTranscribe = await audioResp.blob();
+          logger.info('[Transcription] Downloaded audio blob, size:', fileToTranscribe.size);
+
+          // Derive extension from URL path
+          const ALLOWED_URL_EXTS = new Set(['mp3', 'mp4', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'webm']);
+          const urlPath = audioUrlInput.split('?')[0];
+          const urlExt = urlPath.split('.').pop()?.toLowerCase() || 'mp3';
+          fileExtension = '.' + (ALLOWED_URL_EXTS.has(urlExt) ? urlExt : 'mp3');
+        } else {
+          // File-upload path (local files)
+          fileToTranscribe = file as Blob;
+          const ALLOWED_EXTENSIONS = new Set(['.mp3', '.mp4', '.wav', '.m4a', '.ogg', '.flac', '.aac', '.webm', '.wma']);
+          const fileName = file instanceof File ? (file as File).name : 'audio.mp3';
+          const rawExtension = extname(fileName).toLowerCase() || '.mp3';
+          fileExtension = ALLOWED_EXTENSIONS.has(rawExtension) ? rawExtension : '.mp3';
+        }
+
+        const result = await transcribeInChunks(fileToTranscribe, fileExtension, writer, encoder, language, outputFormat);
 
         // Send final result
         await writer.write(
@@ -115,13 +164,20 @@ export async function POST(
           }) + '\n')
         );
       } catch (error) {
-        // Error already handled in transcribeInChunks
         logger.error('[Transcription] Processing failed:', error);
+        // Propagate error to the client via the stream so it's visible in the UI
+        try {
+          await writer.write(
+            encoder.encode(JSON.stringify({
+              type: 'error',
+              error: error instanceof Error ? error.message : 'Transcription failed'
+            }) + '\n')
+          );
+        } catch (_writeErr) { /* stream may already be closed */ }
       } finally {
         try {
           await writer.close();
         } catch (closeError) {
-          // Ignore close errors
           logger.warn('[Transcription] Error closing writer:', closeError);
         }
       }

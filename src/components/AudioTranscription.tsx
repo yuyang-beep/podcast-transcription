@@ -20,6 +20,7 @@ import { Switch } from './ui/switch';
 export default function AudioTranscription() {
   const [audioUrl, setAudioUrl] = useState('');
   const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioCdnUrl, setAudioCdnUrl] = useState<string>(''); // CDN/direct URL for server-side transcription
   const [transcription, setTranscription] = useState('');
   const [summary, setSummary] = useState('');
   const [srtContent, setSrtContent] = useState('');
@@ -42,11 +43,12 @@ export default function AudioTranscription() {
   ];
 
   const resetAudioState = () => {
-    if (audioUrl) {
+    if (audioUrl && audioUrl.startsWith('blob:')) {
       URL.revokeObjectURL(audioUrl);
     }
     setAudioUrl('');
     setAudioFile(null);
+    setAudioCdnUrl('');
     setTranscription('');
     setSummary('');
     setSrtContent('');
@@ -69,7 +71,9 @@ export default function AudioTranscription() {
     if (!urlInput) return;
 
     setIsLoading(true);
-    setError(null); // Reset error state
+    setError(null);
+    resetAudioState();
+
     try {
       // Validate URL format
       try {
@@ -78,46 +82,39 @@ export default function AudioTranscription() {
         throw new Error('Invalid URL format. Please enter a valid URL.');
       }
 
-      // Only validate audio file extension for direct URL input
-      if (dialogType === 'url') {
+      if (dialogType === 'podcast') {
+        // ── Podcast (Xiaoyuzhou) path ──────────────────────────────────────
+        // Call parse-url directly; the server uses Puppeteer to extract the
+        // CDN audio URL.  We never download the binary blob to the browser,
+        // which avoids the massive upload back to Render when transcribing.
+        const parseResponse = await fetch('/api/parse-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: urlInput }),
+        });
+
+        if (!parseResponse.ok) {
+          const errData = await parseResponse.json().catch(() => ({}));
+          throw new Error((errData as { error?: string }).error || 'Failed to extract audio URL');
+        }
+
+        const { audioUrl: cdnUrl } = await parseResponse.json() as { audioUrl: string };
+        // Use CDN URL directly in the audio player (no local download needed)
+        setAudioUrl(cdnUrl);
+        setAudioCdnUrl(cdnUrl);
+        setAudioFile(null);
+      } else {
+        // ── Direct audio URL path ──────────────────────────────────────────
         const fileExtension = getFileExtension(urlInput).toLowerCase();
         const validExtensions = ['mp3', 'wav', 'm4a', 'ogg', 'aac', 'mp4'];
         if (!validExtensions.includes(fileExtension)) {
-          throw new Error(`Invalid audio file format. Supported formats are: ${validExtensions.join(', ')}`);
+          throw new Error(`Unsupported audio format. Supported: ${validExtensions.join(', ')}`);
         }
+        // Use the URL directly in the audio player
+        setAudioUrl(urlInput);
+        setAudioCdnUrl(urlInput);
+        setAudioFile(null);
       }
-
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
-      setAudioUrl('');
-      setAudioFile(null);
-      // Reset transcription and summary
-      setTranscription('');
-      setSummary('');
-
-      const response = await fetch('/api/audio', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url: urlInput }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to download audio');
-      }
-
-      const blob = await response.blob();
-      
-
-      const blobUrl = URL.createObjectURL(blob);
-      setAudioUrl(blobUrl);
-
-      const extension = getFileExtension(urlInput);
-      // File对象不需要指定type，Whisper API通过文件内容识别格式
-      const audioFile = new File([blob], `podcast.${extension}`);
-      setAudioFile(audioFile);
     } catch (err) {
       logger.error('Error:', err);
       setError(err instanceof Error ? err.message : 'Failed to process audio. Please try again.');
@@ -128,12 +125,24 @@ export default function AudioTranscription() {
   };
 
   const handleTranscribe = async () => {
-    if (!audioFile) return;
+    // Must have either a CDN/direct URL or a locally-uploaded file
+    if (!audioCdnUrl && !audioFile) {
+      setError('No audio loaded. Please load an audio file first.');
+      return;
+    }
+
     setIsTranscribing(true);
     setError(null);
     setSrtContent('');
     const formData = new FormData();
-    formData.append('file', audioFile);
+
+    if (audioCdnUrl) {
+      // Preferred path: pass URL to server so it downloads directly (no large upload)
+      formData.append('audioUrl', audioCdnUrl);
+    } else if (audioFile) {
+      // Fallback: upload the local file
+      formData.append('file', audioFile);
+    }
     formData.append('language', selectedLanguage);
     formData.append('outputFormat', 'srt'); // Always request SRT for download option
 
@@ -142,6 +151,12 @@ export default function AudioTranscription() {
         method: 'POST',
         body: formData,
       });
+
+      // If server returned a non-streaming error, surface it immediately
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error((errData as { error?: string }).error || `Server error ${response.status}`);
+      }
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
