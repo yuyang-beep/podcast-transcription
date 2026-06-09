@@ -167,67 +167,85 @@ export default function AudioTranscription() {
       const decoder = new TextDecoder();
       const partialTranscripts: string[] = [];
       const partialSrts: string[] = [];
+      // Buffer for incomplete JSON lines split across network packets
+      let lineBuffer = '';
+
+      const processLine = async (line: string) => {
+        if (!line.trim()) return;
+        let data: { type: string; message?: string; transcript?: string; srt?: string; progress?: { current: number; total: number }; error?: string };
+        try {
+          data = JSON.parse(line);
+        } catch {
+          logger.error('[Stream] Failed to parse line:', line.slice(0, 100));
+          return;
+        }
+
+        switch (data.type) {
+          case 'progress': {
+            if (summaryOnly) {
+              const m = (data.message ?? '').match(/chunk (\d+)\/(\d+)/i);
+              setProgress(m ? `Analyzing podcast... (${m[1]} / ${m[2]})` : (data.message ?? ''));
+            } else {
+              setProgress(data.message ?? '');
+            }
+            break;
+          }
+          case 'partial':
+            partialTranscripts[(data.progress?.current ?? 1) - 1] = data.transcript ?? '';
+            setTranscription(partialTranscripts.join(' '));
+            if (!summaryOnly && data.srt) {
+              partialSrts[(data.progress?.current ?? 1) - 1] = data.srt;
+              setSrtContent(partialSrts.join('\n'));
+            }
+            break;
+          case 'complete':
+            if (!summaryOnly && data.srt) setSrtContent(data.srt);
+            if (shouldSummarize) {
+              setProgress('Generating summary...');
+              try {
+                const summaryResponse = await fetch('/api/summarize', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    messages: [{ role: 'user', content: data.transcript }],
+                    language: selectedLanguage,
+                  }),
+                });
+                if (!summaryResponse.ok) throw new Error('Failed to generate summary');
+                const summaryData = await summaryResponse.json();
+                setSummary(summaryData.summary);
+              } catch (err) {
+                logger.error('Summary generation error:', err);
+                setError('Failed to generate summary');
+              }
+            }
+            setProgress('Completed');
+            break;
+          case 'error':
+            setError(data.error ?? 'Unknown error');
+            break;
+        }
+      };
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          // Flush any remaining data in the buffer
+          if (lineBuffer.trim()) await processLine(lineBuffer);
+          break;
+        }
 
-        const chunk = decoder.decode(value);
-        const messages = chunk.split('\n').filter(Boolean);
+        // { stream: true } handles multi-byte chars split across packets
+        lineBuffer += decoder.decode(value, { stream: true });
 
-        for (const message of messages) {
-          const data = JSON.parse(message);
-
-          switch (data.type) {
-            case 'progress': {
-              if (summaryOnly) {
-                // Show friendlier progress in summary-only mode
-                const m = (data.message as string).match(/chunk (\d+)\/(\d+)/i);
-                setProgress(m ? `Analyzing podcast... (${m[1]} / ${m[2]})` : data.message);
-              } else {
-                setProgress(data.message);
-              }
-              break;
-            }
-            case 'partial':
-              partialTranscripts[data.progress.current - 1] = data.transcript;
-              setTranscription(partialTranscripts.join(' '));
-              if (!summaryOnly && data.srt) {
-                partialSrts[data.progress.current - 1] = data.srt;
-                setSrtContent(partialSrts.join('\n'));
-              }
-              break;
-            case 'complete':
-              if (!summaryOnly && data.srt) {
-                setSrtContent(data.srt);
-              }
-              if (shouldSummarize) {
-                setProgress('Generating summary...');
-                try {
-                  const summaryResponse = await fetch('/api/summarize', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      messages: [{ role: 'user', content: data.transcript }],
-                      language: selectedLanguage,
-                    }),
-                  });
-                  if (!summaryResponse.ok) throw new Error('Failed to generate summary');
-                  const summaryData = await summaryResponse.json();
-                  setSummary(summaryData.summary);
-                } catch (error) {
-                  logger.error('Summary generation error:', error);
-                  setError('Failed to generate summary');
-                }
-              }
-              setProgress('Completed');
-              break;
-            case 'error':
-              setError(data.error);
-              break;
-          }
+        // Process every complete line (terminated by \n); keep the remainder
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() ?? ''; // last element may be incomplete
+        for (const line of lines) {
+          await processLine(line);
         }
       }
+
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to transcribe audio');
       logger.error('Transcription error:', error);
